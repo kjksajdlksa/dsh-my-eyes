@@ -69,10 +69,11 @@ eyes { action: "update", source: "github:kjksajdlksa/dsh-my-eyes@v1.2.1" }  # �
 
 ## 自更新与迭代（GitHub 通道）
 
-更新来源默认是本地目录 `<插件目录>\updates\latest`，`source` 参数可直接换成 GitHub：
+更新来源默认就是本插件的发布仓库 `github:kjksajdlksa/dsh-my-eyes`（可用 `config.updateSource` 覆盖），`source` 参数可直接换：
 
 | 写法 | 含义 |
 | --- | --- |
+| （不带 `source`） | 默认 = `github:kjksajdlksa/dsh-my-eyes` |
 | `github:owner/repo` | 仓库默认分支 |
 | `github:owner/repo@v1.2.1` | 固定 tag / 分支 / commit（可复现） |
 | `https://github.com/owner/repo` | 同上，URL 形式 |

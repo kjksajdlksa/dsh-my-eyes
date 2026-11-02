@@ -30,7 +30,7 @@ $ErrorActionPreference = 'Stop'
 try { [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false) } catch { }
 try { [Console]::InputEncoding = [System.Text.UTF8Encoding]::new($false) } catch { }
 
-$script:EngineVersion = '1.2.1'
+$script:EngineVersion = '1.2.2'
 # Fallback only: the caller always names an explicit directory, and the plugin keeps
 # every artefact inside its own D:-drive work directory (never the C: system drive).
 $script:OutRoot = Join-Path $env:USERPROFILE 'Documents\dsh-my-eyes'

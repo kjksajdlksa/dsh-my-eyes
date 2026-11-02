@@ -73,7 +73,7 @@ function normalizeConfig(raw) {
     // resolved relative to the current working directory.
     updateSource: typeof src.updateSource === 'string' && src.updateSource.trim() !== ''
       ? src.updateSource.trim()
-      : join(HERE, 'updates', 'latest'),
+      : 'github:kjksajdlksa/dsh-my-eyes',
     updateCache: typeof src.updateCache === 'string' && src.updateCache.trim() !== ''
       ? (isAbsolute(src.updateCache) ? src.updateCache : resolve(src.updateCache))
       : join(workDir, 'update-cache'),

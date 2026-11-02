@@ -6,7 +6,7 @@
 - 工具名：`eyes`
 - 版本：见 [VERSION](D:\DeepSeekHarness\default-workspace\my-eyes\VERSION)（当前 1.1.0）
 - 安装位置：`D:\DeepSeekHarness\default-workspace\my-eyes`（profile 里以 junction 链接，不占 C 盘）
-- 源码仓库：GitHub（自更新通道 `github:<owner>/dsh-my-eyes`，见「自更新与迭代」）
+- 源码仓库：<https://github.com/kjksajdlksa/dsh-my-eyes>（自更新通道 `github:kjksajdlksa/dsh-my-eyes`，见「自更新与迭代」）
 
 ## 它做了什么
 
@@ -30,8 +30,8 @@ eyes { action: "look", target: "window", window: "Chrome" }# 只看 Chrome 窗�
 eyes { action: "look", x: 0, y: 0, width: 960, height: 540}# 看左上角一块
 eyes { action: "watch", durationMs: 4000, fps: 3 }         # 录 4 秒，返回动图 + 拼图
 eyes { action: "selfcheck" }                               # 自检
-eyes { action: "update", source: "github:owner/dsh-my-eyes" }         # 升级到最新
-eyes { action: "update", source: "github:owner/dsh-my-eyes@v1.1.0" }  # 固定到某个 tag
+eyes { action: "update", source: "github:kjksajdlksa/dsh-my-eyes" }         # 升级到最新
+eyes { action: "update", source: "github:kjksajdlksa/dsh-my-eyes@v1.1.0" }  # 固定到某个 tag
 ```
 
 返回里同时给**图片内容**（模型当场看见）和**文件路径**（可复用、可给用户打开）。

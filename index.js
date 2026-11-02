@@ -254,6 +254,8 @@ export function apply(ctx, config) {
         'You have your own eyes on this Windows desktop through the `eyes` tool. Use them instead of asking the user to describe their screen, and instead of guessing.',
         '`eyes { action: "look" }` returns a screenshot as an image block plus its path. Add `target: "window"` with `windowId`/`window` to see one window (occluded windows still render themselves), or `monitor`, `x`, `y`, `width`, `height` for a region.',
         '`eyes { action: "watch", durationMs }` records motion and returns an animated GIF plus a contact sheet; use it for transitions, video, animations and anything where one still is ambiguous. Describe what changed between frames, not just the last frame.',
+        'The user has authorised dynamic recognition on demand: when motion is what answers the question, call `watch` yourself — do not stop to ask for permission first.',
+        '`eyes { action: "update", source: "github:owner/repo" }` upgrades the plugin from its GitHub repository; it validates the payload and rolls back on failure.',
         'Screenshots are of the real desktop and can contain private data: look only at what the task needs, never transcribe secrets, and say what you saw rather than what you expected.',
       ].join('\n'),
     }))

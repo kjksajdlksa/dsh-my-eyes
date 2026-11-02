@@ -6,6 +6,15 @@
   "type": "module",
   "main": "index.js",
   "icon": "./icon.svg",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kjksajdlksa/dsh-my-eyes.git"
+  },
+  "homepage": "https://github.com/kjksajdlksa/dsh-my-eyes#readme",
+  "bugs": {
+    "url": "https://github.com/kjksajdlksa/dsh-my-eyes/issues"
+  },
   "exports": {
     ".": "./index.js",
     "./cordis.patch.yml": "./cordis.patch.yml",

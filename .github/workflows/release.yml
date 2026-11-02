@@ -30,7 +30,7 @@ jobs:
           $tag = if ('${{ github.event_name }}' -eq 'workflow_dispatch') { '${{ inputs.tag }}' } else { '${{ github.ref_name }}' }
           $version = (Get-Content VERSION -Raw).Trim()
           if ($tag -ne "v$version") { throw "tag $tag does not match VERSION v$version" }
-          "release_version=$version" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host "publishing v$version"
 
       - name: Static gate
         run: node scripts/verify.mjs
@@ -41,25 +41,26 @@ jobs:
       - name: Package the payload
         shell: pwsh
         run: |
-          $zip = "dist/dsh-my-eyes-$env:release_version.zip"
+          $version = (Get-Content VERSION -Raw).Trim()
+          $zip = "dist/dsh-my-eyes-$version.zip"
           Compress-Archive -Path dist/latest/* -DestinationPath $zip -Force
-          "payload_zip=$zip" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          if (-not (Test-Path $zip)) { throw "archive was not created" }
+          Write-Host "payload: $zip ($((Get-Item $zip).Length) bytes)"
+
+      - name: Render release notes
+        shell: pwsh
+        run: |
+          $version = (Get-Content VERSION -Raw).Trim()
+          $text = Get-Content .github/release-notes.md -Raw -Encoding UTF8
+          $text = $text.Replace('{{version}}', $version).Replace('{{repo}}', '${{ github.repository }}').Replace('{{tag}}', "v$version")
+          # gh reads the file as UTF-8; -Encoding utf8 would add a BOM on PowerShell 5.1.
+          [System.IO.File]::WriteAllText("$PWD/dist/release-notes.md", $text, (New-Object System.Text.UTF8Encoding($false)))
 
       - name: Publish GitHub release
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          $tag = "v$env:release_version"
-          $notes = @"
-          Self-update payload for `我的眼睛` (My Eyes) $env:release_version.
-
-          Install / upgrade from inside a session:
-
-          ```text
-          eyes { action: "update", source: "github:${{ github.repository }}", ref: "$tag" }
-          ```
-
-          The payload is the `dist/latest` layout: `eyes.ps1`, `index.js`, `tools/`, `scripts/`, locale files and a `MANIFEST.json` with a SHA-256 for every file.
-          "@
-          gh release create $tag $env:payload_zip --title "我的眼睛 $env:release_version" --notes $notes
+          $version = (Get-Content VERSION -Raw).Trim()
+          $tag = "v$version"
+          gh release create $tag "dist/dsh-my-eyes-$version.zip" --title "My Eyes $version" --notes-file dist/release-notes.md

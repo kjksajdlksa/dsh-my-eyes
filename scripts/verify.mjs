@@ -35,6 +35,7 @@ const REQUIRED = [
   'scripts/selfcheck.mjs',
   'scripts/integration.mjs',
   'scripts/release.mjs',
+  'scripts/check-release.mjs',
   'scripts/verify.mjs',
 ]
 

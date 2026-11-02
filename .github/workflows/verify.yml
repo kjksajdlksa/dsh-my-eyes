@@ -27,18 +27,8 @@ jobs:
       - name: Version consistency and module syntax
         run: node scripts/verify.mjs
 
-      - name: Release payload builds
+      - name: Build the self-update payload
         run: node scripts/release.mjs --dest ${{ runner.temp }}/release
 
-      - name: Release payload carries the manifest
-        shell: bash
-        run: |
-          set -euo pipefail
-          test -f "$RUNNER_TEMP/release/latest/MANIFEST.json"
-          node -e "
-            const m = require(process.env.RUNNER_TEMP + '/release/latest/MANIFEST.json');
-            const v = require('./package.json').version;
-            if (m.version !== v) { console.error('manifest version', m.version, '!== package.json', v); process.exit(1); }
-            if (!m.files.includes('eyes.ps1')) { console.error('payload missing eyes.ps1'); process.exit(1); }
-            console.log('manifest ok:', m.version, m.files.length, 'files');
-          "
+      - name: Payload manifest and checksums
+        run: node scripts/check-release.mjs ${{ runner.temp }}/release/latest

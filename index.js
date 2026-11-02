@@ -226,10 +226,10 @@ export function apply(ctx, config) {
   mkdirSync(settings.workDir, { recursive: true })
   const state = new StateStore(settings.workDir)
   const version = readOwnVersion()
-  // What this process has already copied in place. The running module keeps the version
-  // it was loaded with, so without this a second update call would copy the same
-  // payload again and leave another backup behind.
-  let appliedThisProcess
+  // What is installed on disk according to this process. It starts as the version this
+  // module was loaded with and advances after a successful update, because the running
+  // code keeps its old behaviour until Harness restarts while the files on disk do not.
+  let effectiveVersion = version
 
   const engine = new EyeEngine({
     scriptPath: settings.scriptPath,
@@ -353,7 +353,14 @@ export function apply(ctx, config) {
             const info = await engine.request({ action: 'info' })
             return {
               ...info,
-              plugin: { name: '@local/dsh-my-eyes', version, workDir: settings.workDir, stateFile: state.path },
+              plugin: {
+                name: '@local/dsh-my-eyes',
+                version: effectiveVersion,
+                loadedVersion: version,
+                restartRequired: effectiveVersion !== version,
+                workDir: settings.workDir,
+                stateFile: state.path,
+              },
               update: {
                 source: settings.updateSource,
                 cache: settings.updateCache,
@@ -534,7 +541,7 @@ export function apply(ctx, config) {
             try {
               spec = parseSourceSpec(args.source ?? settings.updateSource)
             } catch (error) {
-              return { ok: false, action: 'update', status: 'bad-source', message: String(error.message ?? error), installed: version }
+              return { ok: false, action: 'update', status: 'bad-source', message: String(error.message ?? error), installed: effectiveVersion }
             }
 
             let source
@@ -562,7 +569,7 @@ export function apply(ctx, config) {
                   ref,
                   message,
                   hint: 'private repositories need GITHUB_TOKEN (or config.githubToken); public ones need no credentials',
-                  installed: version,
+                  installed: effectiveVersion,
                 }
               }
               source = channel.path
@@ -572,17 +579,18 @@ export function apply(ctx, config) {
             }
 
             if (resolve(source) === resolve(HERE)) {
-              return { ok: true, action: 'update', status: 'not-applicable', message: 'source and installed copy are the same directory', source, installed: version }
+              return { ok: true, action: 'update', status: 'not-applicable', message: 'source and installed copy are the same directory', source, installed: effectiveVersion }
             }
             if (!existsSync(join(source, 'package.json'))) {
-              return { ok: false, action: 'update', status: 'no-source', message: `no update source at ${source}; set config.updateSource or pass source`, source, installed: version }
+              return { ok: false, action: 'update', status: 'no-source', message: `no update source at ${source}; set config.updateSource or pass source`, source, installed: effectiveVersion }
             }
             let remote
             try {
               remote = versionOfSource(source)
             } catch (error) {
-              return { ok: false, action: 'update', status: 'invalid-package', message: String(error.message ?? error), source, installed: version }
-            }            const comparable = (v) => String(v).split(/[.-]/).map((part) => Number(part)).filter((n) => Number.isFinite(n))
+              return { ok: false, action: 'update', status: 'invalid-package', message: String(error.message ?? error), source, installed: effectiveVersion }
+            }
+            const comparable = (v) => String(v).split(/[.-]/).map((part) => Number(part)).filter((n) => Number.isFinite(n))
             const cmp = (a, b) => {
               const x = comparable(a)
               const y = comparable(b)
@@ -595,31 +603,18 @@ export function apply(ctx, config) {
             const origin = spec.kind === 'github'
               ? { repo: spec.repo, ref: args.ref ?? spec.ref, commit: channel.commit, fetched: channel.method, cache: settings.updateCache }
               : undefined
-            if (cmp(remote.version, version) <= 0) {
-              return { ok: true, action: 'update', status: 'current', installed: version, available: remote.version, source, origin }
+            if (cmp(remote.version, effectiveVersion) <= 0) {
+              return { ok: true, action: 'update', status: 'current', installed: effectiveVersion, available: remote.version, source, origin }
             }
-            if (appliedThisProcess
-              && appliedThisProcess.to === remote.version
-              && (appliedThisProcess.commit ?? null) === (channel.commit ?? null)) {
-              return {
-                ok: true,
-                action: 'update',
-                status: 'already-applied',
-                installed: version,
-                applied: remote.version,
-                origin,
-                note: 'this session already copied that payload; restart DeepSeek Harness to load it',
-              }
-            }
-            const backup = join(settings.workDir, `backup-${version}-${stamp()}`)
+            const backup = join(settings.workDir, `backup-${effectiveVersion}-${stamp()}`)
             copyTree(HERE, backup, ['index.js', 'eyes.ps1', 'tools', 'package.json', 'cordis.patch.yml', 'VERSION', 'README.md', 'locale', 'scripts', 'icon.svg'])
             let copied
             try {
               copied = copyTree(source, HERE, ['index.js', 'eyes.ps1', 'tools', 'package.json', 'cordis.patch.yml', 'VERSION', 'README.md', 'locale', 'scripts', 'icon.svg'])
             } catch (error) {
               copyTree(backup, HERE, ['index.js', 'eyes.ps1', 'tools', 'package.json', 'cordis.patch.yml'])
-              state.recordUpdate({ at: new Date().toISOString(), ok: false, from: version, to: remote.version, origin, error: String(error) })
-              throw new Error(`copy failed, restored ${version}: ${String(error)}`)
+              state.recordUpdate({ at: new Date().toISOString(), ok: false, from: effectiveVersion, to: remote.version, origin, error: String(error) })
+              throw new Error(`copy failed, restored ${effectiveVersion}: ${String(error)}`)
             }
             const verify = await new Promise((resolvePromise) => {
               const child = spawn('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', join(HERE, 'eyes.ps1')], { windowsHide: true })
@@ -631,11 +626,14 @@ export function apply(ctx, config) {
             const healthy = verify.includes('missing request JSON path')
             if (!healthy) {
               copyTree(backup, HERE, ['index.js', 'eyes.ps1', 'tools', 'package.json', 'cordis.patch.yml'])
-              state.recordUpdate({ at: new Date().toISOString(), ok: false, from: version, to: remote.version, origin, verify })
-              return { ok: false, action: 'update', status: 'rolled-back', from: version, attempted: remote.version, verify: verify.slice(0, 300), backup, origin }
+              state.recordUpdate({ at: new Date().toISOString(), ok: false, from: effectiveVersion, to: remote.version, origin, verify })
+              return { ok: false, action: 'update', status: 'rolled-back', from: effectiveVersion, attempted: remote.version, verify: verify.slice(0, 300), backup, origin }
             }
-            state.recordUpdate({ at: new Date().toISOString(), ok: true, from: version, to: remote.version, origin, files: copied.length })
-            appliedThisProcess = { to: remote.version, commit: channel.commit ?? null }
+            state.recordUpdate({ at: new Date().toISOString(), ok: true, from: effectiveVersion, to: remote.version, origin, files: copied.length })
+            // The files on disk are now the new payload even though this module keeps
+            // running the old code until Harness restarts; compare against what is
+            // installed from here on so a second call cannot "downgrade" the copy.
+            effectiveVersion = remote.version
             return {
               ok: true,
               action: 'update',
@@ -645,6 +643,7 @@ export function apply(ctx, config) {
               files: copied.length,
               backup,
               origin,
+              restartRequired: true,
               note: 'restart DeepSeek Harness (or open a new session after reloading) so the new code is loaded',
             }
           }

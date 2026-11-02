@@ -6,7 +6,7 @@
 
 - 插件包名：`@local/dsh-my-eyes`
 - 工具名：`eyes`
-- 版本：见 [VERSION](D:\DeepSeekHarness\default-workspace\my-eyes\VERSION)（当前 1.2.0）
+- 版本：见 [VERSION](D:\DeepSeekHarness\default-workspace\my-eyes\VERSION)（当前 1.2.1）
 - 安装位置：`D:\DeepSeekHarness\default-workspace\my-eyes`（profile 里以 junction 链接，不占 C 盘）
 - 源码仓库：<https://github.com/kjksajdlksa/dsh-my-eyes>（自更新通道 `github:kjksajdlksa/dsh-my-eyes`，见「自更新与迭代」）
 
@@ -33,7 +33,7 @@ eyes { action: "look", x: 0, y: 0, width: 960, height: 540}# 看左上角一块
 eyes { action: "watch", durationMs: 4000, fps: 3 }         # 录 4 秒，返回动图 + 拼图
 eyes { action: "selfcheck" }                               # 自检
 eyes { action: "update", source: "github:kjksajdlksa/dsh-my-eyes" }         # 升级到最新
-eyes { action: "update", source: "github:kjksajdlksa/dsh-my-eyes@v1.2.0" }  # 固定到某个 tag
+eyes { action: "update", source: "github:kjksajdlksa/dsh-my-eyes@v1.2.1" }  # 固定到某个 tag
 ```
 
 返回里同时给**图片内容**（模型当场看见）和**文件路径**（可复用、可给用户打开）。
@@ -74,7 +74,7 @@ eyes { action: "update", source: "github:kjksajdlksa/dsh-my-eyes@v1.2.0" }  # �
 | 写法 | 含义 |
 | --- | --- |
 | `github:owner/repo` | 仓库默认分支 |
-| `github:owner/repo@v1.2.0` | 固定 tag / 分支 / commit（可复现） |
+| `github:owner/repo@v1.2.1` | 固定 tag / 分支 / commit（可复现） |
 | `https://github.com/owner/repo` | 同上，URL 形式 |
 | `D:\path\to\payload` | 本地分发包目录（`dist/latest` 那套布局） |
 
@@ -91,9 +91,8 @@ eyes { action: "update", source: "github:kjksajdlksa/dsh-my-eyes@v1.2.0" }  # �
 
 | `status` | 含义 |
 | --- | --- |
-| `updated` | 已替换，需要重启 Harness 让新代码生效 |
-| `current` | 已安装版本不低于远端 |
-| `already-applied` | 本进程刚刚已经拷过同一份载荷，避免重复备份 |
+| `updated` | 已替换，带 `restartRequired: true`，需要重启 Harness 让新代码生效 |
+| `current` | 磁盘上的版本不低于远端（同一进程里再次升级到更低版本也走这里，不会把文件换旧） |
 | `fetch-failed` | 两条通道都拿不到（404 / 私有仓库缺 token / 限流 / 网络重置） |
 | `bad-source` / `invalid-package` / `no-source` / `not-applicable` | 写法错 / 包不像本插件 / 目录不存在 / 源就是自己 |
 
@@ -103,11 +102,11 @@ eyes { action: "update", source: "github:kjksajdlksa/dsh-my-eyes@v1.2.0" }  # �
 
 ```bash
 node scripts/verify.mjs                      # 静态门禁：版本三处一致、模块语法、清单完整、BOM/密钥扫描
-node scripts/release.mjs --bump 1.2.0        # 升版本 + 生成 dist/latest（含 MANIFEST.json 校验和）
+node scripts/release.mjs --bump 1.2.1        # 升版本 + 生成 dist/latest（含 MANIFEST.json 校验和）
 node scripts/check-release.mjs dist/latest   # 校验分发包版本、必需文件、每个文件的 SHA-256
 node scripts/selfcheck.mjs                   # 真机冒烟（需要桌面会话）
 node scripts/integration.mjs <workDir>       # 以 DSH 方式加载插件，跑全部 action
-git tag v1.2.0 && git push origin main --tags
+git tag v1.2.1 && git push origin main --tags
 ```
 
 推 tag 后 GitHub Actions（`.github/workflows/release.yml`）会校验 `tag == v$VERSION`、跑静态门禁、构建分发包并发布 Release；每次 push/PR 跑 `verify.yml`（Windows + Linux 双平台矩阵，只跑不需要桌面的部分）。
@@ -130,8 +129,7 @@ git tag v1.2.0 && git push origin main --tags
 | 动图打不开 | 用浏览器打开 `clip.gif`；模型侧请直接看 `contact-sheet.png` |
 | `update` 返回 `fetch-failed` + 404 | 仓库名写错 / 私有仓库没给 `GITHUB_TOKEN` / ref 不存在 |
 | `update` 返回 `fetch-failed` + 403 | 未认证的 API 限流（60 次/小时），配 `GITHUB_TOKEN` 即可 |
-| `update` 说 `updated` 但行为没变 | 需要重启 Harness；本进程仍跑着旧代码 |
-| `update` 返回 `already-applied` | 本进程刚拷过同一份；重启后再检查 |
+| `update` 说 `updated` 但行为没变 | 需要重启 Harness；`info` 里 `version` 是新版本、`loadedVersion` 是旧版本、`restartRequired: true` |
 | 想强制重装同一版本 | 删掉 `<工作目录>\update-cache\<slug>`，把 `source` 指到本地 `dist/latest` |
 | `bad-source` | 写法不对，用 `github:owner/repo[@ref]` 或绝对目录 |
 | 想彻底停掉 | 关掉 Harness 即可；引擎随进程退出，孤儿由登记表兜底清理 |

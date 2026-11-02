@@ -81,6 +81,7 @@ function normalizeConfig(raw) {
       ? src.githubToken.trim()
       : (process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN ?? ''),
     gitPath: typeof src.gitPath === 'string' && src.gitPath.trim() !== '' ? src.gitPath.trim() : 'git',
+    preferGit: src.preferGit === true,
   }
 }
 
@@ -225,6 +226,10 @@ export function apply(ctx, config) {
   mkdirSync(settings.workDir, { recursive: true })
   const state = new StateStore(settings.workDir)
   const version = readOwnVersion()
+  // What this process has already copied in place. The running module keeps the version
+  // it was loaded with, so without this a second update call would copy the same
+  // payload again and leave another backup behind.
+  let appliedThisProcess
 
   const engine = new EyeEngine({
     scriptPath: settings.scriptPath,
@@ -353,6 +358,7 @@ export function apply(ctx, config) {
                 source: settings.updateSource,
                 cache: settings.updateCache,
                 channel: /^(?:github:|https?:\/\/(?:www\.)?github\.com\/|[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$)/i.test(settings.updateSource) ? 'github' : 'local',
+                fetchOrder: settings.preferGit ? ['git', 'api-zip'] : ['api-zip', 'git'],
                 credential: settings.githubToken ? 'GITHUB_TOKEN' : 'none',
               },
               engineRuntime: engine.stats,
@@ -542,6 +548,7 @@ export function apply(ctx, config) {
                   cacheDir: settings.updateCache,
                   token: settings.githubToken,
                   gitPath: settings.gitPath,
+                  preferGit: settings.preferGit,
                   logger: ctx.logger,
                 })
               } catch (error) {
@@ -591,6 +598,19 @@ export function apply(ctx, config) {
             if (cmp(remote.version, version) <= 0) {
               return { ok: true, action: 'update', status: 'current', installed: version, available: remote.version, source, origin }
             }
+            if (appliedThisProcess
+              && appliedThisProcess.to === remote.version
+              && (appliedThisProcess.commit ?? null) === (channel.commit ?? null)) {
+              return {
+                ok: true,
+                action: 'update',
+                status: 'already-applied',
+                installed: version,
+                applied: remote.version,
+                origin,
+                note: 'this session already copied that payload; restart DeepSeek Harness to load it',
+              }
+            }
             const backup = join(settings.workDir, `backup-${version}-${stamp()}`)
             copyTree(HERE, backup, ['index.js', 'eyes.ps1', 'tools', 'package.json', 'cordis.patch.yml', 'VERSION', 'README.md', 'locale', 'scripts', 'icon.svg'])
             let copied
@@ -615,6 +635,7 @@ export function apply(ctx, config) {
               return { ok: false, action: 'update', status: 'rolled-back', from: version, attempted: remote.version, verify: verify.slice(0, 300), backup, origin }
             }
             state.recordUpdate({ at: new Date().toISOString(), ok: true, from: version, to: remote.version, origin, files: copied.length })
+            appliedThisProcess = { to: remote.version, commit: channel.commit ?? null }
             return {
               ok: true,
               action: 'update',

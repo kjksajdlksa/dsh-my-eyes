@@ -82,20 +82,29 @@ const current = await call('update.current', { action: 'update', source: join(im
 
 // Self-update rehearsal: build a newer copy in a scratch directory outside the
 // plugin, apply it, then restore the development copy from dist/latest.
+//
+// `scripts/` is deliberately left out of the payload: this file lives there, so copying
+// it over the development tree would rewrite the running test half-way through. The
+// production update does copy `scripts/`; the check below still proves the rest of the
+// payload survives.
 const scratch = join(workDir, 'update-source')
 const release = join(import.meta.dirname, '..', 'dist', 'latest')
 mkdirSync(scratch, { recursive: true })
 const pkg = JSON.parse(readFileSync(join(release, 'package.json'), 'utf8'))
-pkg.version = '1.0.99'
+// Derive the rehearsal version from the payload instead of hardcoding it, so this
+// test keeps working across releases.
+const [major, minor, patch] = String(pkg.version).split('.').map(Number)
+const rehearsalVersion = `${major}.${minor}.${patch + 1}`
+pkg.version = rehearsalVersion
 writeFileSync(join(scratch, 'package.json'), `${JSON.stringify(pkg, null, 2)}\n`, 'utf8')
-for (const entry of ['index.js', 'eyes.ps1', 'VERSION', 'cordis.patch.yml', 'tools', 'locale', 'scripts']) {
+for (const entry of ['index.js', 'eyes.ps1', 'VERSION', 'cordis.patch.yml', 'tools', 'locale']) {
   cpSync(join(release, entry), join(scratch, entry), { recursive: true })
 }
 const updated = await call('update.applied', { action: 'update', source: scratch })
 const installed = JSON.parse(readFileSync(join(import.meta.dirname, '..', 'package.json'), 'utf8')).version
 console.log(`     installed version after rehearsal: ${installed}`)
-if (updated?.status !== 'updated' || installed !== '1.0.99') {
-  results.push({ label: 'update.assert', ok: false, error: `expected 1.0.99, got ${updated?.status}/${installed}` })
+if (updated?.status !== 'updated' || installed !== rehearsalVersion) {
+  results.push({ label: 'update.assert', ok: false, error: `expected ${rehearsalVersion}, got ${updated?.status}/${installed}` })
 }
 for (const rel of ['tools/engine.mjs', 'tools/gif.mjs', 'scripts/selfcheck.mjs', 'index.js', 'eyes.ps1']) {
   if (!existsSync(join(import.meta.dirname, '..', rel))) {

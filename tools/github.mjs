@@ -7,13 +7,14 @@
  * A repository is materialised into a cache directory under the plugin work
  * directory, so nothing but plugin files ever lands outside it.
  *
- * Two fetching strategies, tried in this order:
- *   1. `git` — shallow fetch of exactly one ref into `<cache>/<repo>@<ref>`. Cheap to
- *      refresh (a fetch of one commit), and a tag can be pinned for reproducible
- *      installs. Works with a token through an ephemeral `http.extraheader`, which is
- *      never written into the repository's `.git/config`.
- *   2. HTTPS zip from `codeload.github.com` + `Expand-Archive` — used when git is not
- *      installed. Costs a full download per update, so it is only a fallback.
+ * Two fetching strategies:
+ *   1. REST API zipball (default) — `api.github.com` resolves the ref and returns a
+ *      signed codeload archive, then `Expand-Archive` unpacks it. Needs no git, works
+ *      on networks where git-over-HTTPS is reset or missing, accepts a token, and the
+ *      commit is resolved through the API so an upgrade stays traceable.
+ *   2. `git` shallow clone/fetch (opt-in via `preferGit`, or automatic fallback) — one
+ *      commit per fetch, reuses the cache, and pins tags. A token reaches git through an
+ *      ephemeral `http.extraheader`, never through `.git/config` or a remote URL.
  *
  * Every failure is reported with the command that failed and a redacted stderr tail;
  * a token in a spec or an error string is masked before it reaches a log or a result.
@@ -21,10 +22,12 @@
 
 import { spawnSync } from 'node:child_process'
 import { createWriteStream, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync } from 'node:fs'
-import { get as httpsGet } from 'node:https'
+import { Readable } from 'node:stream'
 import { join, resolve } from 'node:path'
 
 const DEFAULT_TIMEOUT_MS = 180_000
+const API_ROOT = 'https://api.github.com'
+const MAX_ARCHIVE_BYTES = 64 * 1024 * 1024
 const GITHUB_PREFIX = /^(?:github:)?([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?(?:[@#](.+))?$/
 const GITHUB_URL = /^https?:\/\/(?:www\.)?github\.com\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?(?:\/(?:tree|blob)\/(.+?))?(?:[?#](.+))?\/?$/
 
@@ -60,6 +63,165 @@ export function parseSourceSpec(spec) {
 function safeSlug(value) {
   return String(value).replace(/[^A-Za-z0-9._-]+/g, '-')
 }
+
+/** Read JSON that may carry a UTF-8 BOM (Windows editors and some exporters add one). */
+export function readJsonFile(path) {
+  const text = readFileSync(path, 'utf8').replace(/^\uFEFF/, '')
+  return JSON.parse(text)
+}
+
+/** Read the version a fetched source advertises. */
+export function versionOfSource(dir) {
+  try {
+    const pkg = readJsonFile(join(dir, 'package.json'))
+    return { version: pkg.version, name: pkg.name }
+  } catch (error) {
+    throw new Error(`cannot read package.json in ${dir}: ${String(error.message ?? error)}`)
+  }
+}
+
+export function looksLikeSource(dir) {
+  return existsSync(join(dir, 'package.json')) && existsSync(join(dir, 'eyes.ps1'))
+}
+
+function freshDir(dir) {
+  rmSync(dir, { recursive: true, force: true })
+  mkdirSync(dir, { recursive: true })
+}
+
+/* ------------------------------------------------------------ REST API channel */
+
+function apiHeaders(token) {
+  const headers = {
+    Accept: 'application/vnd.github+json',
+    'User-Agent': 'dsh-my-eyes-update',
+    'X-GitHub-Api-Version': '2022-11-28',
+  }
+  if (token) headers.Authorization = `Bearer ${token}`
+  return headers
+}
+
+function describeApiFailure(status, body, token) {
+  const message = typeof body === 'object' && body ? body.message : String(body ?? '')
+  if (status === 404) {
+    return `GitHub returned 404 (repository or ref not found${token ? '' : '; private repositories need GITHUB_TOKEN'})`
+  }
+  if (status === 403 || status === 429) {
+    return `GitHub refused the request (HTTP ${status}${token ? '' : ', unauthenticated rate limit is 60 requests/hour — set GITHUB_TOKEN'}): ${maskSecret(message, token)}`
+  }
+  return `GitHub API HTTP ${status}: ${maskSecret(message, token)}`
+}
+
+async function apiRequest(path, { token, timeoutMs = 30_000 } = {}) {
+  const response = await fetch(`${API_ROOT}${path}`, {
+    headers: apiHeaders(token),
+    redirect: 'follow',
+    signal: AbortSignal.timeout(timeoutMs),
+  })
+  const text = await response.text()
+  let body
+  try { body = text ? JSON.parse(text) : null } catch { body = text }
+  return { status: response.status, ok: response.ok, body }
+}
+
+/** Resolve a ref (default branch when omitted) to a commit via the API. */
+export async function resolveCommit({ repo, ref, token }) {
+  const path = ref
+    ? `/repos/${repo}/commits/${encodeURIComponent(ref)}`
+    : `/repos/${repo}/commits?per_page=1`
+  const response = await apiRequest(path, { token })
+  if (!response.ok) return undefined
+  const commit = Array.isArray(response.body) ? response.body[0] : response.body
+  const sha = commit?.sha
+  return typeof sha === 'string' ? sha.slice(0, 7) : undefined
+}
+
+async function downloadToFile(url, target, { token, timeoutMs = DEFAULT_TIMEOUT_MS } = {}) {
+  const response = await fetch(url, {
+    headers: apiHeaders(token),
+    redirect: 'follow',
+    signal: AbortSignal.timeout(timeoutMs),
+  })
+  if (!response.ok) {
+    const text = await response.text().catch(() => '')
+    let body = text
+    try { body = JSON.parse(text) } catch { /* keep text */ }
+    throw new Error(describeApiFailure(response.status, body, token))
+  }
+  const declared = Number(response.headers.get('content-length') ?? 0)
+  if (declared > MAX_ARCHIVE_BYTES) {
+    throw new Error(`archive is ${Math.round(declared / 1024 / 1024)} MB, which is larger than the ${Math.round(MAX_ARCHIVE_BYTES / 1024 / 1024)} MB limit`)
+  }
+  await new Promise((resolvePromise, rejectPromise) => {
+    const out = createWriteStream(target)
+    let written = 0
+    const stream = Readable.fromWeb(response.body)
+    stream.on('data', (chunk) => {
+      written += chunk.length
+      if (written > MAX_ARCHIVE_BYTES) {
+        stream.destroy(new Error('archive exceeded the size limit while downloading'))
+      }
+    })
+    stream.on('error', rejectPromise)
+    out.on('error', rejectPromise)
+    out.on('finish', () => out.close(() => resolvePromise()))
+    stream.pipe(out)
+  })
+  return target
+}
+
+function expandZip(dest, zipPath) {
+  const script = [
+    "$ErrorActionPreference='Stop'",
+    `Expand-Archive -LiteralPath '${zipPath.replace(/'/g, "''")}' -DestinationPath '${dest.replace(/'/g, "''")}' -Force`,
+  ].join('; ')
+  const result = spawnSync('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script], {
+    encoding: 'utf8',
+    timeout: 120_000,
+    windowsHide: true,
+  })
+  if (result.error || result.status !== 0) {
+    throw new Error(`unzip failed: ${(result.stderr ?? result.error?.message ?? '').slice(0, 400)}`)
+  }
+}
+
+/** Move the single `repo-ref/` folder produced by a zipball up into `dest`. */
+function flattenZipRoot(dest) {
+  const entries = readdirSync(dest)
+  if (entries.length !== 1) return
+  const only = join(dest, entries[0])
+  if (!statSync(only).isDirectory() || !existsSync(join(only, 'package.json'))) return
+  for (const name of readdirSync(only)) {
+    const to = join(dest, name)
+    rmSync(to, { recursive: true, force: true })
+    renameSync(join(only, name), to)
+  }
+  rmSync(only, { recursive: true, force: true })
+}
+
+/** Fetch through the REST API zipball (no git required). */
+export async function fetchWithApiZip({ repo, ref, dest, token, timeoutMs = DEFAULT_TIMEOUT_MS }) {
+  const commit = await resolveCommit({ repo, ref, token }).catch(() => undefined)
+  const url = ref
+    ? `${API_ROOT}/repos/${repo}/zipball/${encodeURIComponent(ref)}`
+    : `${API_ROOT}/repos/${repo}/zipball`
+  const zipPath = `${dest}.zip`
+  freshDir(dest)
+  await downloadToFile(url, zipPath, { token, timeoutMs })
+  try {
+    expandZip(dest, zipPath)
+  } finally {
+    rmSync(zipPath, { force: true })
+  }
+  flattenZipRoot(dest)
+  if (!looksLikeSource(dest)) {
+    rmSync(dest, { recursive: true, force: true })
+    throw new Error(`"${repo}" does not look like a my-eyes package (no package.json + eyes.ps1 at the root)`)
+  }
+  return { path: dest, commit, method: 'api-zip' }
+}
+
+/* ----------------------------------------------------------------- git channel */
 
 function gitEnv(token) {
   const env = { ...process.env, GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'never', GIT_ASKPASS: 'echo' }
@@ -103,18 +265,7 @@ function commitOf(gitPath, dir, token) {
   }
 }
 
-function looksLikeSource(dir) {
-  return existsSync(join(dir, 'package.json')) && existsSync(join(dir, 'eyes.ps1'))
-}
-
-function freshDir(dir) {
-  rmSync(dir, { recursive: true, force: true })
-  mkdirSync(dir, { recursive: true })
-}
-
-/**
- * Fetch `repo` at `ref` through git into `dest`, reusing an existing shallow clone.
- */
+/** Fetch `repo` at `ref` through git into `dest`, reusing an existing shallow clone. */
 export function fetchWithGit({ repo, ref, dest, token, gitPath = 'git', timeoutMs = DEFAULT_TIMEOUT_MS }) {
   const url = `https://github.com/${repo}.git`
   const branch = ref || undefined
@@ -147,133 +298,41 @@ export function fetchWithGit({ repo, ref, dest, token, gitPath = 'git', timeoutM
   return { path: dest, commit: commitOf(gitPath, dest, token), method: 'git-clone' }
 }
 
-function download(url, target, token, redirects = 0) {
-  return new Promise((resolvePromise, rejectPromise) => {
-    if (redirects > 5) { rejectPromise(new Error('too many redirects')); return }
-    const headers = { 'User-Agent': 'dsh-my-eyes-update', Accept: 'application/zip' }
-    if (token) headers.Authorization = `Bearer ${token}`
-    const request = httpsGet(url, { headers }, (response) => {
-      const status = response.statusCode ?? 0
-      if (status >= 300 && status < 400 && response.headers.location) {
-        response.resume()
-        download(response.headers.location, target, token, redirects + 1).then(resolvePromise, rejectPromise)
-        return
-      }
-      if (status === 401 || status === 403) {
-        response.resume()
-        rejectPromise(new Error(`GitHub refused the download (HTTP ${status}); the repository may be private (set GITHUB_TOKEN) or the ref may not exist`))
-        return
-      }
-      if (status === 404) {
-        response.resume()
-        rejectPromise(new Error('GitHub returned 404 for that repository/ref'))
-        return
-      }
-      if (status !== 200) {
-        response.resume()
-        rejectPromise(new Error(`GitHub download failed with HTTP ${status}`))
-        return
-      }
-      const out = createWriteStream(target)
-      response.pipe(out)
-      out.on('finish', () => out.close(() => resolvePromise(target)))
-      out.on('error', rejectPromise)
-    })
-    request.on('error', rejectPromise)
-    request.setTimeout(60_000, () => { request.destroy(new Error('download timed out')) })
-  })
-}
-
-function expandZip(gitlessDir, zipPath) {
-  const script = [
-    "$ErrorActionPreference='Stop'",
-    `Expand-Archive -LiteralPath '${zipPath.replace(/'/g, "''")}' -DestinationPath '${gitlessDir.replace(/'/g, "''")}' -Force`,
-  ].join('; ')
-  const result = spawnSync('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script], {
-    encoding: 'utf8',
-    timeout: 120_000,
-    windowsHide: true,
-  })
-  if (result.error || result.status !== 0) {
-    throw new Error(`unzip failed: ${(result.stderr ?? result.error?.message ?? '').slice(0, 400)}`)
-  }
-}
-
-/** Move the single `repo-ref/` folder produced by a codeload zip up into `dest`. */
-function flattenZipRoot(dest) {
-  const entries = readdirSync(dest)
-  if (entries.length !== 1) return
-  const only = join(dest, entries[0])
-  if (!statSync(only).isDirectory() || !existsSync(join(only, 'package.json'))) return
-  for (const name of readdirSync(only)) {
-    const to = join(dest, name)
-    rmSync(to, { recursive: true, force: true })
-    renameSync(join(only, name), to)
-  }
-  rmSync(only, { recursive: true, force: true })
-}
-
-function fetchWithZip({ repo, ref, dest, token }) {
-  const branch = ref || 'HEAD'
-  const url = branch === 'HEAD'
-    ? `https://codeload.github.com/${repo}/zip/HEAD`
-    : `https://codeload.github.com/${repo}/zip/${encodeURIComponent(branch)}`
-  const zipPath = join(dest, '..', `${safeSlug(repo)}-${safeSlug(branch)}.zip`)
-  return download(url, zipPath, token).then(() => {
-    // A previous git attempt may have left a partial checkout here; the archive must
-    // land in an empty directory or its single root folder cannot be flattened.
-    freshDir(dest)
-    expandZip(dest, zipPath)
-    rmSync(zipPath, { force: true })
-    flattenZipRoot(dest)
-    if (!looksLikeSource(dest)) {
-      throw new Error(`"${repo}" does not look like a my-eyes package (no package.json + eyes.ps1 at the root)`)
-    }
-    return { path: dest, commit: undefined, method: 'zip' }
-  })
-}
-
 /**
  * Materialise a GitHub repository at `ref` inside `cacheDir`.
+ *
+ * Order matters: the REST API path is tried first because it survives networks that
+ * reset git-over-HTTPS, and because it is the only path that works without git at all.
+ * `preferGit` flips the order for machines that want the cheap incremental fetch.
+ *
  * @returns {Promise<{path:string, repo:string, ref?:string, commit?:string, method:string}>}
  */
-export async function fetchGitHubSource({ repo, ref, cacheDir, token, gitPath = 'git', timeoutMs = DEFAULT_TIMEOUT_MS, logger } = {}) {
+export async function fetchGitHubSource({ repo, ref, cacheDir, token, gitPath = 'git', preferGit = false, timeoutMs = DEFAULT_TIMEOUT_MS, logger } = {}) {
   if (!repo || !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo)) {
     throw new Error(`invalid repository "${repo}"; expected owner/name`)
   }
   mkdirSync(cacheDir, { recursive: true })
   const dest = join(cacheDir, `${safeSlug(repo)}@${safeSlug(ref || 'default')}`)
 
-  let gitError
-  try {
+  const api = async () => {
+    const result = await fetchWithApiZip({ repo, ref, dest, token, timeoutMs })
+    return { ...result, repo, ref }
+  }
+  const git = async () => {
     const result = fetchWithGit({ repo, ref, dest, token, gitPath, timeoutMs })
     return { ...result, repo, ref }
-  } catch (error) {
-    gitError = error
-    logger?.warn?.(`[my-eyes] git fetch failed (${maskSecret(error.message, token)}), falling back to zip`)
   }
 
-  try {
-    const result = await fetchWithZip({ repo, ref, dest, token })
-    return { ...result, repo, ref }
-  } catch (error) {
-    // Both channels failed: report the more actionable of the two messages.
-    throw new Error(`could not fetch ${repo}${ref ? `@${ref}` : ''}: ${maskSecret(error.message, token)} (git: ${maskSecret(gitError.message, token)})`)
+  const attempts = preferGit ? [['git', git], ['api', api]] : [['api', api], ['git', git]]
+  const failures = []
+  for (const [name, attempt] of attempts) {
+    try {
+      return await attempt()
+    } catch (error) {
+      const message = maskSecret(error.message ?? String(error), token)
+      failures.push(`${name}: ${message}`)
+      logger?.warn?.(`[my-eyes] ${name} fetch failed, trying the other channel: ${message}`)
+    }
   }
-}
-
-/** Read JSON that may carry a UTF-8 BOM (Windows editors and some exporters add one). */
-export function readJsonFile(path) {
-  const text = readFileSync(path, 'utf8').replace(/^\uFEFF/, '')
-  return JSON.parse(text)
-}
-
-/** Read the version a fetched source advertises. */
-export function versionOfSource(dir) {
-  try {
-    const pkg = readJsonFile(join(dir, 'package.json'))
-    return { version: pkg.version, name: pkg.name }
-  } catch (error) {
-    throw new Error(`cannot read package.json in ${dir}: ${String(error.message ?? error)}`)
-  }
+  throw new Error(`could not fetch ${repo}${ref ? `@${ref}` : ''} — ${failures.join(' | ')}`)
 }

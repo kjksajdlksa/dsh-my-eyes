@@ -1,10 +1,12 @@
 # 我的眼睛（My Eyes）
 
+[![verify](https://github.com/kjksajdlksa/dsh-my-eyes/actions/workflows/verify.yml/badge.svg)](https://github.com/kjksajdlksa/dsh-my-eyes/actions/workflows/verify.yml)
+
 给 DeepSeek Harness 的模型装一双**看得见你电脑屏幕的眼睛**：能截屏、能单看某个窗口（被挡住也行）、能录一小段动态画面。它不依赖任何第三方包、不需要外部视觉 API、不弹热键，装好即用。
 
 - 插件包名：`@local/dsh-my-eyes`
 - 工具名：`eyes`
-- 版本：见 [VERSION](D:\DeepSeekHarness\default-workspace\my-eyes\VERSION)（当前 1.1.0）
+- 版本：见 [VERSION](D:\DeepSeekHarness\default-workspace\my-eyes\VERSION)（当前 1.2.0）
 - 安装位置：`D:\DeepSeekHarness\default-workspace\my-eyes`（profile 里以 junction 链接，不占 C 盘）
 - 源码仓库：<https://github.com/kjksajdlksa/dsh-my-eyes>（自更新通道 `github:kjksajdlksa/dsh-my-eyes`，见「自更新与迭代」）
 
@@ -31,7 +33,7 @@ eyes { action: "look", x: 0, y: 0, width: 960, height: 540}# 看左上角一块
 eyes { action: "watch", durationMs: 4000, fps: 3 }         # 录 4 秒，返回动图 + 拼图
 eyes { action: "selfcheck" }                               # 自检
 eyes { action: "update", source: "github:kjksajdlksa/dsh-my-eyes" }         # 升级到最新
-eyes { action: "update", source: "github:kjksajdlksa/dsh-my-eyes@v1.1.0" }  # 固定到某个 tag
+eyes { action: "update", source: "github:kjksajdlksa/dsh-my-eyes@v1.2.0" }  # 固定到某个 tag
 ```
 
 返回里同时给**图片内容**（模型当场看见）和**文件路径**（可复用、可给用户打开）。
@@ -76,23 +78,36 @@ eyes { action: "update", source: "github:kjksajdlksa/dsh-my-eyes@v1.1.0" }  # �
 | `https://github.com/owner/repo` | 同上，URL 形式 |
 | `D:\path\to\payload` | 本地分发包目录（`dist/latest` 那套布局） |
 
-拉取有两条通道，按顺序尝试：
+拉取有两条通道：
 
-1. **git 浅克隆/浅 fetch**：一个 commit 的增量，缓存复用，`git` 不在 PATH 时自动跳到第 2 条。
-2. **codeload zip + `Expand-Archive`**：整包下载解压，无需 git。
+| 通道 | 怎么走 | 什么时候 |
+| --- | --- | --- |
+| **GitHub REST API zipball**（默认） | `api.github.com` 解析 ref → 签名 zip → `Expand-Archive`；commit 用 API 查 | 最稳：不需要 git，HTTPS 到 github.com 被重置/没装 git 也能用，支持私有仓库 token |
+| **git 浅克隆 / 浅 fetch**（兜底） | 一个 commit 的克隆或增量 fetch，缓存复用 | API 被限流或不通时自动切换；配置 `preferGit: true` 可让它优先（能蹭本地 git 配置与代理） |
 
-拿到源码后：读 `package.json` 版本 → 与已安装版本比较 → 备份当前版本 → 拷贝 `index.js` / `eyes.ps1` / `tools` / `package.json` / `cordis.patch.yml` / `VERSION` / `README.md` / `locale` / `scripts` → 用新引擎做一次冒烟校验 → 失败自动回滚。返回里带 `repo`、`ref`、`commit`，升级到哪一版可追溯。
+两条通道失败互不掩盖：结果里同时给出两边的失败原因。
 
-私有仓库：设置环境变量 `GITHUB_TOKEN`（或插件配置 `githubToken`），token 只在当次 git 调用里以 `http.extraheader` 出现，**不会写进 `.git/config`**，报错信息里也会被打码。
+拿到源码后：读 `package.json` 版本 → 与已安装版本比较 → 备份当前版本 → 拷贝 `index.js` / `eyes.ps1` / `tools` / `package.json` / `cordis.patch.yml` / `VERSION` / `README.md` / `locale` / `scripts` → 用新引擎做一次冒烟校验 → 失败自动回滚。返回里带 `repo`、`ref`、`commit`（两条通道都有），升级到哪一版可追溯。
+
+| `status` | 含义 |
+| --- | --- |
+| `updated` | 已替换，需要重启 Harness 让新代码生效 |
+| `current` | 已安装版本不低于远端 |
+| `already-applied` | 本进程刚刚已经拷过同一份载荷，避免重复备份 |
+| `fetch-failed` | 两条通道都拿不到（404 / 私有仓库缺 token / 限流 / 网络重置） |
+| `bad-source` / `invalid-package` / `no-source` / `not-applicable` | 写法错 / 包不像本插件 / 目录不存在 / 源就是自己 |
+
+私有仓库：设置环境变量 `GITHUB_TOKEN`（或插件配置 `githubToken`）。走 git 通道时 token 只在当次调用里以 `http.extraheader` 出现，**不会写进 `.git/config`**；走 API 通道时只放在请求头里，两端都会在报错信息里被打码。
 
 ### 发布流程（仓库侧）
 
 ```bash
-node scripts/verify.mjs                      # 静态门禁：版本三处一致、模块语法、清单完整
-node scripts/release.mjs --bump 1.1.0        # 升版本 + 生成 dist/latest（含 MANIFEST.json 校验和）
+node scripts/verify.mjs                      # 静态门禁：版本三处一致、模块语法、清单完整、BOM/密钥扫描
+node scripts/release.mjs --bump 1.2.0        # 升版本 + 生成 dist/latest（含 MANIFEST.json 校验和）
+node scripts/check-release.mjs dist/latest   # 校验分发包版本、必需文件、每个文件的 SHA-256
 node scripts/selfcheck.mjs                   # 真机冒烟（需要桌面会话）
 node scripts/integration.mjs <workDir>       # 以 DSH 方式加载插件，跑全部 action
-git tag v1.1.0 && git push origin main --tags
+git tag v1.2.0 && git push origin main --tags
 ```
 
 推 tag 后 GitHub Actions（`.github/workflows/release.yml`）会校验 `tag == v$VERSION`、跑静态门禁、构建分发包并发布 Release；每次 push/PR 跑 `verify.yml`（Windows + Linux 双平台矩阵，只跑不需要桌面的部分）。
@@ -114,7 +129,10 @@ git tag v1.1.0 && git push origin main --tags
 | 截到黑屏 | 受保护内容（DRM 视频、部分硬件加速界面）无法截取，属 Windows 限制 |
 | 动图打不开 | 用浏览器打开 `clip.gif`；模型侧请直接看 `contact-sheet.png` |
 | `update` 返回 `fetch-failed` + 404 | 仓库名写错 / 私有仓库没给 `GITHUB_TOKEN` / ref 不存在 |
-| `update` 返回 `current` 但仍想重装 | 删掉 `<工作目录>\update-cache\<slug>` 再跑，或把 `source` 指到本地 `dist/latest` |
+| `update` 返回 `fetch-failed` + 403 | 未认证的 API 限流（60 次/小时），配 `GITHUB_TOKEN` 即可 |
+| `update` 说 `updated` 但行为没变 | 需要重启 Harness；本进程仍跑着旧代码 |
+| `update` 返回 `already-applied` | 本进程刚拷过同一份；重启后再检查 |
+| 想强制重装同一版本 | 删掉 `<工作目录>\update-cache\<slug>`，把 `source` 指到本地 `dist/latest` |
 | `bad-source` | 写法不对，用 `github:owner/repo[@ref]` 或绝对目录 |
 | 想彻底停掉 | 关掉 Harness 即可；引擎随进程退出，孤儿由登记表兜底清理 |
 

@@ -1,6 +1,6 @@
 {
   "name": "@local/dsh-my-eyes",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "private": true,
   "description": "我的眼睛 (My Eyes): a zero-dependency Windows vision surface for DeepSeek Harness — capture the desktop as the model's own eyes, list windows, and record short dynamic clips (frames + animated GIF + contact sheet) without polling the screen.",
   "type": "module",

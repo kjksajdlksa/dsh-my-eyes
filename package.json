@@ -1,0 +1,50 @@
+{
+  "name": "@local/dsh-my-eyes",
+  "version": "1.1.0",
+  "private": true,
+  "description": "我的眼睛 (My Eyes): a zero-dependency Windows vision surface for DeepSeek Harness — capture the desktop as the model's own eyes, list windows, and record short dynamic clips (frames + animated GIF + contact sheet) without polling the screen.",
+  "type": "module",
+  "main": "index.js",
+  "icon": "./icon.svg",
+  "exports": {
+    ".": "./index.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./locale/*.json": "./locale/*.json",
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "verify": "node scripts/verify.mjs",
+    "selfcheck": "node scripts/selfcheck.mjs",
+    "integration": "node scripts/integration.mjs",
+    "release": "node scripts/release.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "keywords": [
+    "deepseek",
+    "harness",
+    "dsh",
+    "dsh-plugin",
+    "vision",
+    "screen-capture",
+    "video",
+    "windows"
+  ],
+  "files": [
+    "index.js",
+    "eyes.ps1",
+    "tools",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "scripts",
+    "icon.svg",
+    "README.md",
+    "VERSION"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

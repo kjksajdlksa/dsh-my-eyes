@@ -1,0 +1,19 @@
+# Local runtime artefacts — never part of a release
+dist/
+updates/
+update-cache/
+backups/
+state.json
+
+# Machine-local captures
+*.bmp
+capture-*/
+watch-*/
+
+# Editor / OS noise
+node_modules/
+Thumbs.db
+desktop.ini
+.DS_Store
+.vscode/
+*.log

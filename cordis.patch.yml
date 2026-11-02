@@ -1,0 +1,6 @@
+# 我的眼睛 (My Eyes) bundle
+# 一个纯宿主层插件：注册 `eyes` 工具，让模型能看见这台 Windows 电脑的桌面画面，
+# 并能录下一小段动态画面（帧 / 动图 / 拼图）。不需要切换预设、不需要外部视觉 API。
+- insert:
+    - id: my-eyes
+      name: '@local/dsh-my-eyes'
